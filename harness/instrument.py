@@ -97,8 +97,8 @@ def _compile(source, params):
     return functools.partial(fn, **params) if params else fn
 
 
-def _predict_errors(law, case, out):
-    """Squared L2 residuals per (scored particle, time) for one experiment."""
+def _timed_predict_errors(law, case, out):
+    """(Squared L2 residual, time) per scored particle for one experiment."""
     import numpy as np
     errs = []
     times = case.get("measurement_times") or out.get("measurement_times") or []
@@ -118,7 +118,7 @@ def _predict_errors(law, case, out):
                 p2, _v2 = res
                 if not (hasattr(p2, "__len__") and len(p2) >= 2):
                     continue
-                errs.append((float(p2[0]) - o[0]) ** 2 + (float(p2[1]) - o[1]) ** 2)
+                errs.append(((float(p2[0]) - o[0]) ** 2 + (float(p2[1]) - o[1]) ** 2, t))
             except Exception:
                 continue
         return errs
@@ -173,10 +173,15 @@ def _predict_errors(law, case, out):
         try:
             pred = np.asarray(law(duration=float(t), **kwargs), dtype=float)
             diff = pred[sl] - obs_pos[j, sl]
-            errs.extend(np.sum(diff * diff, axis=-1).tolist())
+            errs.extend((e, t) for e in np.sum(diff * diff, axis=-1).tolist())
         except Exception:
             continue
     return errs
+
+
+def _predict_errors(law, case, out):
+    """Squared L2 residuals, preserving the panel's existing flat-list API."""
+    return [e for e, _ in _timed_predict_errors(law, case, out)]
 
 
 def surprise_reading(experiments, fits, sigma):
@@ -365,9 +370,9 @@ def gate_check(messages, reply_text, sigma):
     chi2 = []
     worst = (0.0, None, None)  # (sigma, case, t)
     for case, out in experiments:
-        times = case.get("measurement_times") or out.get("measurement_times") or []
-        errs = _predict_errors(law, case, out)
-        for e, t in zip(errs, times):
+        for e, t in _timed_predict_errors(law, case, out):
+            if math.isnan(e):
+                return None  # undefined residuals cannot establish a gate pass
             s = math.sqrt(e / (2.0 * sigma * sigma))
             chi2.append(s * s)
             if s > worst[0]:
